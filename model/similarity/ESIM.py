@@ -14,10 +14,9 @@ class ESIM:
         self._num_class = param.num_class
         self._vocab_size = param.vocab_size
         self._emb_trainable = param.emb_trainable
-        self._hidden_size = param.hidden_size
         self._lstm_unit_encode = param.lstm_unit_encode
-        self._lstm_unit_composition = param.lstm_unit_encode * 4
-        self._l2_reg_lambda = param.l2_reg_lambd
+        self._lstm_unit_composition = param.lstm_unit_encode * 2
+        self._l2_reg_lambda = param.l2_reg_lambda
 
     def _full_connect_layer(self, linear_input, output_size, layer_scope, reuse, activation_fn=None):
         out = tf.contrib.layers.fully_connected(
@@ -31,7 +30,7 @@ class ESIM:
         )
         return out
 
-    def _bi_lstm(self, sentence, sentence_len, name, unit, reuse=False):
+    def _bi_lstm(self, sentence, sentence_len, name, unit, cal_type='rep', reuse=False):
         scope = 'BiLSTM_' + name
         with tf.name_scope(scope) and tf.variable_scope(scope, reuse=reuse):
             # forward
@@ -48,10 +47,14 @@ class ESIM:
                                                                      inputs=sentence,
                                                                      sequence_length=sentence_len,
                                                                      dtype=self._float_dtype)
-            fw_c, fw_h = output_states[0]
-            bw_c, bw_h = output_states[1]
-            hidden_concat = tf.concat([fw_h, bw_h], axis=-1)
-            return hidden_concat
+            if cal_type == 'rep':
+                fw_c, fw_h = output_states[0]
+                bw_c, bw_h = output_states[1]
+                hidden_concat = tf.concat([fw_h, bw_h], axis=-1)
+                return hidden_concat
+            elif cal_type == 'encode':
+                encode_concat = tf.concat(outputs, axis=2)
+                return encode_concat
 
     @staticmethod
     def _composition_concat(rep1, rep2):
@@ -71,7 +74,7 @@ class ESIM:
             self.sentence2 = tf.placeholder(self._int_dtype, [None, self._seq_length], name='sentence2')
             self.sentence1_len = tf.placeholder(self._int_dtype, [None], name='sentence1_len')
             self.sentence2_len = tf.placeholder(self._int_dtype, [None], name='sentence2_len')
-            self.y = tf.placeholder(self._float_dtype, [None, self._num_class], name="input_y")
+            # self.y = tf.placeholder(self._float_dtype, [None, self._num_class], name="input_y")
             self.dropout_rate = tf.placeholder(self._float_dtype, name="dropout_rate")
 
             if init_emb:
@@ -88,15 +91,15 @@ class ESIM:
             self.sentence2_emb = tf.nn.embedding_lookup(self.emb, self.sentence2)
             # encode
             bi_rep1 = self._bi_lstm(self.sentence1_emb, self.sentence1_len,
-                                    'encode', self._lstm_unit_encode)
+                                    'encode', self._lstm_unit_encode, cal_type='encode')
             bi_rep2 = self._bi_lstm(self.sentence2_emb, self.sentence2_len,
-                                    'encode', self._lstm_unit_encode, reuse=True)
+                                    'encode', self._lstm_unit_encode, cal_type='encode', reuse=True)
             # local inference modeling
             with tf.name_scope('local_inference_modeling'):
                 with tf.name_scope('word_sim'):
                     attention_weight = tf.einsum('abd, acd->abc', bi_rep1, bi_rep2)
-                    att_rep1 = tf.nn.softmax(attention_weight, dim=1)
-                    att_rep2 = tf.nn.softmax(attention_weight, dim=2)
+                    att_rep1 = tf.nn.softmax(attention_weight, axis=1)
+                    att_rep2 = tf.nn.softmax(attention_weight, axis=2)
                     rep1_hat = tf.einsum('abd, acb->acd', bi_rep2, att_rep2)
                     rep2_hat = tf.einsum('abd, abc->acd', bi_rep1, att_rep1)
 
@@ -113,9 +116,11 @@ class ESIM:
             # inference composition
             with tf.name_scope('inference_composition'):
                 self.rep1 = self._bi_lstm(rep1_compose, self.sentence1_len,
-                                          'composition', self._lstm_unit_composition)
+                                          'composition', self._lstm_unit_composition,
+                                          cal_type='encode')
                 self.rep2 = self._bi_lstm(rep2_compose, self.sentence2_len,
-                                          'composition', self._lstm_unit_composition, reuse=True)
+                                          'composition', self._lstm_unit_composition,
+                                          cal_type='encode', reuse=True)
                 self.rep = self._composition_concat(self.rep1, self.rep2)
 
 
@@ -128,13 +133,26 @@ if __name__ == '__main__':
             self.seq_length = 50
             self.word_dim = 128
             self.num_class = 2
-            self._lstm_unit_encode = 128
+            self.lstm_unit_encode = 128
             self.vocab_size = 1000
             self.emb_trainable = True
             self.l2_reg_lambda = 0.001
             self.lr = 0.001
 
 
-    test1 = np.random.randint(1000, size=[5, 50])
-    test2 = np.random.randint(1000, size=[5, 50])
+    test1 = np.random.randint(1000, size=[1, 50])
+    test2 = np.random.randint(1000, size=[1, 50])
     testy = np.random.randint(2, size=[5, 2])
+
+    with tf.Session() as sess:
+        param = Param()
+        model = ESIM(param)
+        sess.run(tf.global_variables_initializer())
+        tmp = [v.name for v in tf.trainable_variables()]
+        print(tmp)
+        rep = sess.run(model.rep, feed_dict={model.sentence1: test1,
+                                             model.sentence2: test2,
+                                             model.sentence1_len: [50],
+                                             model.sentence2_len: [50],
+                                             model.dropout_rate: 0})
+        print(rep.shape)
