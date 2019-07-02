@@ -74,7 +74,7 @@ class ESIM:
             self.sentence2 = tf.placeholder(self._int_dtype, [None, self._seq_length], name='sentence2')
             self.sentence1_len = tf.placeholder(self._int_dtype, [None], name='sentence1_len')
             self.sentence2_len = tf.placeholder(self._int_dtype, [None], name='sentence2_len')
-            # self.y = tf.placeholder(self._float_dtype, [None, self._num_class], name="input_y")
+            self.y = tf.placeholder(self._float_dtype, [None, self._num_class], name="input_y")
             self.dropout_rate = tf.placeholder(self._float_dtype, name="dropout_rate")
 
             if init_emb:
@@ -122,6 +122,24 @@ class ESIM:
                                           'composition', self._lstm_unit_composition,
                                           cal_type='encode', reuse=True)
                 self.rep = self._composition_concat(self.rep1, self.rep2)
+
+        with tf.name_scope('classification') and tf.variable_scope('classification'):
+            self.scores = self._full_connect_layer(self.rep, self._num_class,
+                                                   'output_layer', reuse=False)
+
+        with tf.name_scope('loss'):
+            cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y,
+                                                                       logits=self.scores)
+            self.loss = tf.reduce_mean(cross_entropy) + tf.losses.get_regularization_loss()
+
+        with tf.name_scope('performance'):
+            self.softmax = tf.nn.softmax(self.scores, name='softmax')
+            self.prediction = tf.argmax(self.scores, 1)
+            correct_prediction = tf.equal(self.prediction, tf.argmax(self.y, 1))
+            self.accuracy = tf.reduce_mean(tf.cast(correct_prediction,
+                                                   self._float_dtype),
+                                           name='accuracy')
+            self.f1 = tf.contrib.metrics.f1_score(tf.argmax(self.y, 1), self.prediction, name='f1')
 
 
 if __name__ == '__main__':
